@@ -1,0 +1,115 @@
+```
+sudo groupadd -r minio-user
+sudo useradd -r -g minio-user -s -d /home/minio-user /sbin/nologin minio-user
+```
+
+```
+sudo mkdir /data
+sudo chown minio-user:minio-user /data
+sudo chmod 750 /data
+```
+
+```
+wget https://dl.min.io/server/minio/release/linux-amd64/minio_20231223071911.0.0_amd64.deb -O minio.deb
+sudo dpkg -i minio.deb
+```
+
+```
+sudo nano /etc/default/minio
+```
+
+```                                                                            
+MINIO_ACCESS_KEY=admin
+MINIO_SECRET_KEY=xxx
+MINIO_VOLUMES="/data"
+MINIO_OPTS="--address :9000 --console-address :9001"
+MINIO_BROWSER_REDIRECT_URL=https://s3.example.org/minio/
+MINIO_DOMAIN=s3.example.org
+
+```
+
+```
+sudo systemctl start minio
+sudo systemctl enable minio
+sudo systemctl status minio
+```
+
+```
+mc alias set myminio https://s3.example.org MINIO_ACCESS_KEY MINIO_SECRET_KEY
+```
+
+```
+sudo apt install nginx certbot python3-certbot-nginx python3-certbot-dns-cloudflare -y 
+```
+### token cloudflare pour autoriser letsencrypt
+```
+nano /root/.secrets/cloudflare.ini
+```
+- contenu 
+```
+dns_cloudflare_api_token = TON_TOKEN_API
+```
+### Générer les certificats
+```
+sudo certbot certonly \
+  --dns-cloudflare \
+  --dns-cloudflare-credentials /root/.secrets/cloudflare.ini \
+  -d minio.tondomaine.com
+```
+
+### Configurer Nginx pour MinIO
+```
+nano /etc/nginx/sites-available/minio.conf
+```
+
+```
+server {
+    listen 80;
+    server_name minio.tondomaine.com;
+
+    # Redirection HTTP -> HTTPS
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name minio.tondomaine.com;
+
+    # Chemins des certificats (Certbot remplira ces champs)
+    ssl_certificate /etc/letsencrypt/live/minio.tondomaine.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/minio.tondomaine.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Sécurisation minimale SSL
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    # Reverse proxy vers MinIO API
+    location / {
+        proxy_pass http://127.0.0.1:9000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Reverse proxy vers MinIO Console (optionnel)
+    location /minio/ {
+        proxy_pass http://127.0.0.1:9001/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+```
+## activation
+```
+sudo ln -s /etc/nginx/sites-available/minio.conf /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
